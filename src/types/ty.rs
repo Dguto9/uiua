@@ -45,8 +45,7 @@ impl Type {
                 .map(|Boxed(val)| value_as_dim(val))
                 .collect::<Option<Vec<_>>>()
             {
-                let suffix = dims.is_empty().then(Vec::new);
-                scalar.shaped(DynShape { suffix, dims })
+                scalar.shaped(DynShape { suffix: None, dims })
             } else {
                 let shape = DynShape::from(arr.row_count());
                 let fields = (arr.data.iter())
@@ -74,7 +73,7 @@ impl Type {
                     _ => {}
                 }
             }
-            DynShape::SCALAR.with_scalar(value_as_scalar_spec(val)?)
+            DynShape::ANY.with_scalar(value_as_scalar_spec(val)?)
         };
         Some(ty)
     }
