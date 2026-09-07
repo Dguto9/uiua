@@ -45,7 +45,7 @@ impl Type {
                 .map(|Boxed(val)| value_as_dim(val))
                 .collect::<Option<Vec<_>>>()
             {
-                scalar.shaped(DynShape { suffix: None, dims })
+                scalar.shaped(DynShape::from(dims))
             } else {
                 let shape = DynShape::from(arr.row_count());
                 let fields = (arr.data.iter())
