@@ -1,6 +1,7 @@
 use super::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Default, Serialize, Deserialize)]
+#[doc(hidden)]
 pub struct Type {
     pub scalar: Scalar,
     pub shape: DynShape,
