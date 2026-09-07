@@ -2788,7 +2788,7 @@ primitive!(
     ///
     /// [validate] is more useful when used in conjunction with [type checking](https://www.uiua.org/docs/experimental#type-checking).
     ///
-    /// If the first argument is a scalar character, then a scalar array with the specified scalar type will be validated. You can use a scalar character in the form of a built-in constant. These constants all format from a name.
+    /// If the first argument is a scalar character, then an array with the specified scalar type will be validated. You can use a scalar character in the form of a built-in constant. These constants all format from a name.
     /// - `ℝ` - `num` - Real numbers
     /// - `ℤ` - `int` - Integers
     /// - `ℕ` - `nat` - Natural numbers
@@ -2796,7 +2796,7 @@ primitive!(
     /// - `𝕌` - `char` - Unicode characters
     /// ex: # Experimental!
     ///   : ⊨ℝ 5.1
-    /// ex! # Experimental!
+    /// ex: # Experimental!
     ///   : ⊨ℝ [1 2 3]
     /// ex! # Experimental!
     ///   : ⊨ℝ "hey"
@@ -2838,10 +2838,10 @@ primitive!(
     /// Shape and type can both be validated by using a box array where the type is the first item and the rest of the items are axis sizes.
     /// ex: # Experimental!
     ///   : ⊨{𝕌 ∞ 2} ["ab""cd"]
-    /// To allow for any shape, specify no axis sizes.
-    /// ex: # Experimental!
+    /// To require a scalar, specify no axis sizes.
+    /// ex! # Experimental!
     ///   : ⊨{ℤ} 5
-    ///   : ⊨{ℤ} [3 ¯6 2]
+    ///   : ⊨{𝕌} @a
     ///   : ⊨{ℤ} [1_2 3_4]
     /// Type specifications can be nested to specify box arrays with given types inside the boxes.
     /// ex: # Experimental!
