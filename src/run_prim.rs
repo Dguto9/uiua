@@ -28,7 +28,7 @@ use crate::{
     context::FillFrame,
     grid_fmt::GridFmt,
     media, run_sys_op, run_sys_op_mod,
-    types::{Type, validate},
+    types::{OrType, Type, validate},
     value::*,
 };
 
@@ -1382,10 +1382,10 @@ impl ImplPrimitive {
                 env.push(vals);
             }
             &ImplPrimitive::ValidateImpl(side) => {
-                let spec = Type::from_spec(&env.pop(1)?)
+                let spec = OrType::from_spec(&env.pop(1)?)
                     .ok_or_else(|| env.error("Invalid type specification"))?;
                 let val = env.pop(2)?;
-                if let Err(e) = validate(spec, &mut Type::of_val(&val), side) {
+                if let Err(e) = validate(spec, &mut Type::of_val(&val).into(), side) {
                     return Err(env.error(format!("Type error: {e}")));
                 }
                 env.push(val);

@@ -68,7 +68,7 @@ impl DynShape {
             suffix: None,
         }
     }
-    pub fn prefix(prefix: impl Into<Vec<Dim>>) -> Self {
+    pub fn with_prefix(prefix: impl Into<Vec<Dim>>) -> Self {
         DynShape {
             dims: prefix.into(),
             suffix: Some(Vec::new()),
@@ -92,6 +92,13 @@ impl DynShape {
     pub fn rank(&self) -> usize {
         self.dims.len() + self.suffix.as_ref().map_or(0, |s| s.len())
     }
+    pub fn try_rank(&self) -> Option<usize> {
+        if self.suffix.is_none() {
+            Some(self.dims.len())
+        } else {
+            None
+        }
+    }
     pub fn is_any(&self) -> bool {
         self.dims.is_empty() && self.suffix.as_ref().is_some_and(|s| s.is_empty())
     }
@@ -110,6 +117,54 @@ impl DynShape {
             row.dims.remove(0);
         }
         row
+    }
+    pub fn prefix_only(&self) -> Option<DynShape> {
+        if self.suffix.is_some() && !self.dims.is_empty() {
+            Some(DynShape {
+                dims: self.dims.clone(),
+                suffix: None,
+            })
+        } else {
+            None
+        }
+    }
+    pub fn suffix_only(&self) -> Option<DynShape> {
+        if self.dims.is_empty()
+            && let Some(suffix) = self.suffix.clone()
+        {
+            Some(DynShape {
+                dims: suffix,
+                suffix: None,
+            })
+        } else {
+            None
+        }
+    }
+    pub fn superset_of(&self, other: &Self) -> bool {
+        if other.is_any() {
+            return false;
+        } else if self.is_any() {
+            return true;
+        } else if let Some(pref_self) = self.prefix_only()
+            && let Some(pref_other) = other.prefix_only()
+        {
+            return pref_self.superset_of(&pref_other);
+        } else if let Some(suff_self) = self.suffix_only()
+            && let Some(suff_other) = other.suffix_only()
+        {
+            return suff_self.superset_of(&suff_other);
+        } else if let Some(self_rank) = self.try_rank()
+            && let Some(other_rank) = other.try_rank()
+            && self_rank == other_rank
+        {
+            return self
+                .dims
+                .iter()
+                .zip(other.dims.iter())
+                .all(|(slfdim, othdim)| slfdim.superset_of(othdim));
+        } else {
+            return false;
+        }
     }
     pub fn compatible_with(&self, other: &Self) -> bool {
         self.dims.len() == other.dims.len()
@@ -204,6 +259,13 @@ impl Div for Dim {
 
 impl Dim {
     pub const MIN: Self = Dim::Static(1);
+    pub fn superset_of(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Dim::Dyn, Dim::Static(_)) => true,
+            (Dim::Static(a), Dim::Static(b)) => a == b,
+            _ => false,
+        }
+    }
     pub fn compatible(self, other: Self) -> bool {
         match (self, other) {
             (Dim::Dyn, _) | (_, Dim::Dyn) => true,

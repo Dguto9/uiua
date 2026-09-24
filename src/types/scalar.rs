@@ -7,18 +7,18 @@ use super::*;
 pub enum ScalarBox {
     #[default]
     Any,
-    All(Box<Type>),
-    Def(Option<EcoString>, Vec<Type>),
+    All(Box<OrType>),
+    Def(Option<EcoString>, Vec<OrType>),
 }
 impl ScalarBox {
-    pub fn into_inner(self) -> Option<Type> {
+    pub fn into_inner(self) -> Option<OrType> {
         match self {
             ScalarBox::Any => None,
             ScalarBox::All(ty) => Some(*ty),
             ScalarBox::Def(_, items) => items.into_iter().next(),
         }
     }
-    pub fn as_first(&self) -> Option<&Type> {
+    pub fn as_first(&self) -> Option<&OrType> {
         match self {
             ScalarBox::Any => None,
             ScalarBox::All(ty) => Some(ty),
@@ -41,10 +41,10 @@ pub enum Scalar {
     Char,
     Stream,
     Box(ScalarBox),
-    Or(Vec<Type>),
     #[default]
     Any,
 }
+
 impl Scalar {
     pub fn is_any(&self) -> bool {
         matches!(self, Scalar::Any)
@@ -84,11 +84,6 @@ impl Scalar {
             (Scalar::Int, Scalar::Nat | Scalar::Bool) => true,
             (Scalar::Nat, Scalar::Bool) => true,
             (Scalar::Char, Scalar::Ascii) => true,
-            (Scalar::Or(slf_variants), Scalar::Or(sub_variants)) => slf_variants
-                .iter()
-                .collect::<HashSet<_>>()
-                .is_superset(&sub_variants.iter().collect()),
-            (Scalar::Or(variants), _) => variants.iter().any(|ty| ty.scalar.superset_of(sub)),
             (a, b) => discriminant(a) == discriminant(b),
         }
     }
@@ -104,7 +99,12 @@ impl Scalar {
     pub fn compatible_with_boxes(&self, other: &Self) -> bool {
         match (self, other) {
             (Scalar::Box(ScalarBox::All(a)), Scalar::Box(ScalarBox::All(b))) => {
-                a.scalar.compatible_with_boxes(&b.scalar) && a.shape.compatible_with(&b.shape)
+                a.iter().all(|t1| {
+                    b.iter().all(|t2| {
+                        t1.scalar.compatible_with_boxes(&t2.scalar)
+                            && t1.shape.compatible_with(&t2.shape)
+                    })
+                })
             }
             _ => self.compatible_with(other),
         }
@@ -112,7 +112,12 @@ impl Scalar {
     pub fn union(self, other: Self) -> Self {
         match (self, other) {
             (Scalar::Box(ScalarBox::All(a)), Scalar::Box(ScalarBox::All(b))) => {
-                if a.scalar.compatible_with_boxes(&b.scalar) && a.shape.compatible_with(&b.shape) {
+                if a.iter().all(|t1| {
+                    b.iter().all(|t2| {
+                        t1.scalar.compatible_with_boxes(&t2.scalar)
+                            && t1.shape.compatible_with(&t2.shape)
+                    })
+                }) {
                     Scalar::Box(ScalarBox::All(a.max(b)))
                 } else {
                     Scalar::Box(ScalarBox::Any)
@@ -128,10 +133,8 @@ impl Scalar {
         match self {
             Scalar::Int | Scalar::Nat | Scalar::Bool => *self = Scalar::Num,
             Scalar::Ascii => *self = Scalar::Char,
-            Scalar::Box(ScalarBox::All(ty)) => ty.scalar.unrefine(),
-            Scalar::Box(ScalarBox::Def(_, fields)) => {
-                fields.iter_mut().for_each(|t| t.scalar.unrefine())
-            }
+            Scalar::Box(ScalarBox::All(tys)) => tys.unrefine(),
+            Scalar::Box(ScalarBox::Def(_, fields)) => fields.iter_mut().for_each(|t| t.unrefine()),
             _ => {}
         }
     }
@@ -165,13 +168,17 @@ impl Scalar {
                 if arr.rank() == 1 && shapes() > 1 {
                     Scalar::Box(ScalarBox::Def(
                         None,
-                        arr.data.iter().map(|Boxed(v)| Type::of_val(v)).collect(),
+                        arr.data
+                            .iter()
+                            .map(|Boxed(v)| Type::of_val(v).into())
+                            .collect(),
                     ))
                 } else {
                     Scalar::Box(
                         (arr.data.iter())
                             .map(|Boxed(v)| Type::of_val(v))
                             .reduce(BitOr::bitor)
+                            .map(Into::into)
                             .map(Box::new)
                             .map_or(ScalarBox::Any, ScalarBox::All),
                     )
@@ -205,7 +212,6 @@ impl fmt::Debug for Scalar {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Scalar::Box(ScalarBox::Def(..)) => write!(f, "{self}"),
-            Scalar::Or(_) => write!(f, "{self}"),
             _ => write!(f, "array of {self}"),
         }
     }
@@ -233,16 +239,6 @@ impl fmt::Display for Scalar {
                     write!(f, "{field}")?;
                 }
                 write!(f, "}}")
-            }
-            Scalar::Or(variants) => {
-                write!(f, "(")?;
-                for (i, variant) in variants.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, "|")?;
-                    }
-                    write!(f, "{variant}")?;
-                }
-                write!(f, ")")
             }
             Scalar::Complex => write!(f, "ℂ"),
             Scalar::Stream => write!(f, "stream"),

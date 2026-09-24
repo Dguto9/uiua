@@ -1,4 +1,4 @@
-use crate::types::{Dim, DynShape, Scalar, ScalarBox, Type, TypeVal, typecheck};
+use crate::types::{Dim, DynShape, OrType, OrTypeVal, Scalar, ScalarBox, Type, TypeVal, typecheck};
 
 use super::*;
 
@@ -96,7 +96,7 @@ impl Compiler {
             validator: Option<SigNode>,
             validator_inv: Option<Node>,
             init: Option<SigNode>,
-            ty: Type,
+            ty: OrType,
         }
         let mut fields = Vec::new();
         // Collect fields
@@ -230,7 +230,7 @@ impl Compiler {
                 {
                     data_field.init = None;
                 }
-                let mut ty = Type::default();
+                let mut ty = OrType::default();
                 let init = if let Some(mut init) = data_field.init {
                     has_initializers = true;
                     // Process comment
@@ -254,7 +254,7 @@ impl Compiler {
                     if init_sn.sig.outputs() == 1 {
                         ty = (typecheck(&init_sn, &self.asm).ok())
                             .and_then(|(_, out)| out.into_iter().next())
-                            .map(TypeVal::ty)
+                            .map(OrTypeVal::ty)
                             .unwrap_or_default();
                     } else {
                         self.add_error(

@@ -1,3 +1,5 @@
+use std::slice::{Iter, IterMut};
+
 use super::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Default, Serialize, Deserialize, Hash)]
@@ -15,7 +17,7 @@ impl Type {
         }
     }
     pub fn listy() -> Self {
-        DynShape::prefix([Dim::Dyn]).with_scalar(Scalar::Any)
+        DynShape::with_prefix([Dim::Dyn]).with_scalar(Scalar::Any)
     }
     pub fn list() -> Self {
         DynShape::from(Dim::Dyn).with_scalar(Scalar::Any)
@@ -33,14 +35,7 @@ impl Type {
             && arr.rank() == 1
             && let Some((first, rest)) = arr.data.split_first()
         {
-            let Some(mut scalar) = value_as_scalar_spec(&first.0) else {
-                {
-                    let variants = (rest.iter())
-                        .map(|Boxed(val)| Type::from_spec(val))
-                        .collect::<Option<Vec<_>>>()?;
-                    return Some(Scalar::Or(variants).any_shape());
-                }
-            };
+            let mut scalar = value_as_scalar_spec(&first.0)?;
             if let [Boxed(arr)] = rest
                 && arr.type_id() == f64::TYPE_ID
                 && arr.shape == [0]
@@ -247,7 +242,6 @@ impl Type {
                 Scalar::Box(ScalarBox::All(ty)) => [Boxed((*ty).spec_val())].into(),
                 Scalar::Box(ScalarBox::Any) => '□'.into(),
                 Scalar::Box(ScalarBox::Def(..)) => unreachable!(),
-                Scalar::Or(_) => unreachable!(),
             }
         }
         if let Scalar::Box(ScalarBox::Def(name, fields)) = self.scalar {
@@ -256,11 +250,6 @@ impl Type {
                 val.meta.label = Some(name);
             }
             val
-        } else if let Scalar::Or(variants) = self.scalar {
-            std::iter::once('?'.into())
-                .chain(variants.into_iter().map(Type::spec_val))
-                .map(Boxed)
-                .collect()
         } else if self.shape.is_scalar() {
             [Boxed(scalar_to_val(self.scalar))].into()
         } else if self.shape.is_any() {
@@ -275,6 +264,9 @@ impl Type {
             }
             items.into()
         }
+    }
+    pub fn superset_of(&self, other: &Type) -> bool {
+        return self.scalar.superset_of(&other.scalar) && self.shape.superset_of(&other.shape);
     }
 }
 
@@ -344,6 +336,196 @@ impl fmt::Display for Type {
             Ok(())
         } else {
             write!(f, "{}{}", self.shape, self.scalar)
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Default, Serialize, Deserialize, Hash)]
+pub struct OrType(Vec<Type>);
+
+impl From<Type> for OrType {
+    fn from(value: Type) -> Self {
+        OrType(vec![value])
+    }
+}
+
+impl From<OrTypeVal> for OrType {
+    fn from(value: OrTypeVal) -> Self {
+        value.ty()
+    }
+}
+
+impl FromIterator<Type> for OrType {
+    fn from_iter<T: IntoIterator<Item = Type>>(iter: T) -> Self {
+        let types = iter.into_iter().collect::<Vec<_>>();
+        OrType(
+            types
+                .iter()
+                .enumerate()
+                .flat_map(|(i, t1)| {
+                    types
+                        .iter()
+                        .cloned()
+                        .enumerate()
+                        .filter(move |(j, t2)| i != *j && t1.superset_of(t2))
+                })
+                .map(|i| i.1)
+                .collect(),
+        )
+    }
+}
+
+impl FromIterator<OrType> for OrType {
+    fn from_iter<T: IntoIterator<Item = OrType>>(iter: T) -> Self {
+        iter.into_iter().flat_map(|ot| ot.into_iter()).collect()
+    }
+}
+
+impl IntoIterator for OrType {
+    type Item = Type;
+    type IntoIter = std::vec::IntoIter<Self::Item>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+impl OrType {
+    pub fn iter_mut(&mut self) -> IterMut<Type> {
+        self.0.iter_mut()
+    }
+    pub fn iter(&self) -> Iter<Type> {
+        self.0.iter()
+    }
+    pub fn as_slice(&self) -> &[Type] {
+        self.0.as_slice()
+    }
+    pub fn from_spec(val: &Value) -> Option<Self> {
+        if let Value::Box(arr) = val
+            && arr.rank() == 1
+            && let Some((first, rest)) = arr.data.split_first()
+            && first.as_ref() == &std::convert::Into::<Value>::into('?')
+        {
+            (rest.iter())
+                .map(|Boxed(val)| Type::from_spec(val))
+                .collect::<Option<Self>>()
+        } else {
+            Some(Type::from_spec(val)?.into())
+        }
+    }
+    // pub fn unboxed(self) -> Self {
+    //     self.into_iter().map(Type::unboxed).collect()
+    // }
+    // pub fn into_row(self) -> Self {
+    //     self.into_iter().map(Type::into_row).collect()
+    // }
+    // pub fn into_nth_row(self, n: usize) -> Self {
+    //     self.into_iter().map(|t| t.into_nth_row(n)).collect()
+    // }
+    // pub fn into_first_row(self) -> Self {
+    //     self.into_iter().map(Type::into_first_row).collect()
+    // }
+    // pub fn into_last_row(self) -> Self {
+    //     self.into_iter().map(Type::into_last_row).collect()
+    // }
+    // pub fn boxed(self) -> Self {
+    //     self.into_iter().map(Type::boxed).collect()
+    // }
+    // pub fn box_list(self) -> Self {
+    //     self.into_iter().map(Type::box_list).collect()
+    // }
+    // pub fn as_boxes(&self) -> Option<(Option<EcoString>, Vec<Self>)> {
+    //     let Scalar::Box(sb) = &self.scalar else {
+    //         return None;
+    //     };
+    //     let ty = match sb {
+    //         ScalarBox::Def(name, fields) => {
+    //             return Some((name.clone(), fields.clone()));
+    //         }
+    //         ScalarBox::Any => Type::default(),
+    //         ScalarBox::All(ty) => (**ty).clone(),
+    //     };
+    //     let n = match self.shape.row_count() {
+    //         Dim::Static(n) => n,
+    //         Dim::Dyn => 1,
+    //     };
+    //     Some((None, vec![ty; n]))
+    // }
+    // // TODO: Rework this to set only
+    // pub fn as_mut_fields(
+    //     &mut self,
+    //     name_hint: Option<&str>,
+    //     mut len_hint: usize,
+    // ) -> Option<(&mut Option<EcoString>, &mut [Self])> {
+    //     if let Scalar::Any = self.scalar {
+    //         self.scalar = Scalar::Box(ScalarBox::Any);
+    //     }
+    //     if self.shape.suffix.is_none()
+    //         && let &[Dim::Static(len)] = self.shape.dims.as_slice()
+    //     {
+    //         len_hint = len;
+    //     }
+    //     let Scalar::Box(sb) = &self.scalar else {
+    //         return None;
+    //     };
+    //     match sb {
+    //         ScalarBox::Any => {
+    //             self.scalar = Scalar::Box(ScalarBox::Def(
+    //                 name_hint.map(Into::into),
+    //                 vec![Type::default(); len_hint],
+    //             ));
+    //             let Scalar::Box(ScalarBox::Def(name, fields)) = &mut self.scalar else {
+    //                 unreachable!()
+    //             };
+    //             Some((name, fields))
+    //         }
+    //         ScalarBox::All(ty) => {
+    //             self.scalar = Scalar::Box(ScalarBox::Def(
+    //                 name_hint.map(Into::into),
+    //                 vec![(**ty).clone(); len_hint],
+    //             ));
+    //             let Scalar::Box(ScalarBox::Def(name, fields)) = &mut self.scalar else {
+    //                 unreachable!()
+    //             };
+    //             Some((name, fields))
+    //         }
+    //         ScalarBox::Def(..) => {
+    //             let Scalar::Box(ScalarBox::Def(name, fields)) = &mut self.scalar else {
+    //                 unreachable!()
+    //             };
+    //             if name.is_none() {
+    //                 *name = name_hint.map(Into::into);
+    //             }
+    //             Some((name, fields))
+    //         }
+    //     }
+    // }
+    pub fn spec_val(self) -> Value {
+        std::iter::once('?'.into())
+            .chain(self.into_iter().map(Type::spec_val))
+            .map(Boxed)
+            .collect()
+    }
+    pub fn branch_count(&self) -> usize {
+        self.0.len()
+    }
+    pub fn unrefine(&mut self) {
+        self.iter_mut().for_each(|t| t.scalar.unrefine())
+    }
+}
+impl fmt::Display for OrType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0.as_slice() {
+            [ty] => write!(f, "{ty}"),
+            types => {
+                write!(f, "(")?;
+                for (i, ty) in types.iter().enumerate() {
+                    if i != 0 {
+                        write!(f, "|")?;
+                    }
+                    write!(f, "{ty}")?;
+                }
+                write!(f, ")")
+            }
         }
     }
 }

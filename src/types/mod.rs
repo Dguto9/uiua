@@ -24,16 +24,16 @@ use crate::{
 
 pub use {scalar::*, shape::*, ty::*, val::*};
 
-pub type TypeSig = (Vec<TypeVal>, Vec<TypeVal>);
+pub type TypeSig = (Vec<OrTypeVal>, Vec<OrTypeVal>);
 
 /// Typecheck a node
 pub fn typecheck(sn: &SigNode, asm: &Assembly) -> Result<TypeSig, (TypeError, usize)> {
     let mut env = TypeEnv {
         asm,
-        stack: vec![TypeVal::default(); sn.sig.args()],
+        stack: vec![OrTypeVal::default(); sn.sig.args()],
         under_stack: Vec::new(),
         call_stack: Vec::new(),
-        arg_types: vec![TypeVal::default(); sn.sig.args()],
+        arg_types: vec![OrTypeVal::default(); sn.sig.args()],
         fill_stack: Vec::new(),
         stashed_fills: Vec::new(),
         can_set_arg_types: true,
@@ -47,7 +47,18 @@ pub fn typecheck(sn: &SigNode, asm: &Assembly) -> Result<TypeSig, (TypeError, us
         .map_err(|e| (e, env.call_stack.pop().unwrap_or(0)))
 }
 
-pub fn validate(spec: Type, ch: &mut Type, side: Option<SubSide>) -> TypeResult {
+pub fn validate(spec: OrType, ch: &mut OrType, side: Option<SubSide>) -> TypeResult {
+    Some(spec.into_iter().find_map(|spec_variant| {
+        ch.iter_mut()
+            .map(|mut ch_variant| validate_single_type(spec_variant.clone(), &mut ch_variant, side))
+            .collect::<TypeResult>()
+            .err()
+    }))
+    .flatten()
+    .map_or(Ok(()), |err| Err(err))
+}
+
+pub fn validate_single_type(spec: Type, ch: &mut Type, side: Option<SubSide>) -> TypeResult {
     // println!("spec: {spec:?}, ch: {ch:?}");
     check_scalar(spec.scalar, ch)?;
     check_shape(spec.shape, ch, side)?;
@@ -80,12 +91,6 @@ fn check_scalar(spec: Scalar, ch: &mut Type) -> TypeResult {
                 }
             }
         }
-    } else if let Scalar::Or(variants) = &spec {
-        variants
-            .iter()
-            .cloned()
-            .find_map(|variant_spec| validate(variant_spec, ch, None).ok())
-            .ok_or(TypeError::ScalarMismatch(spec, ch.scalar.clone()))?;
     } else if !spec.superset_of(&ch.scalar) {
         return Err(TypeError::ScalarMismatch(spec, ch.scalar.clone()));
     }
@@ -150,17 +155,17 @@ fn check_shape(shape: DynShape, ch: &mut Type, side: Option<SubSide>) -> TypeRes
 
 pub struct TypeEnv<'a> {
     asm: &'a Assembly,
-    stack: Vec<TypeVal>,
-    under_stack: Vec<TypeVal>,
+    stack: Vec<OrTypeVal>,
+    under_stack: Vec<OrTypeVal>,
     call_stack: Vec<usize>,
-    arg_types: Vec<TypeVal>,
-    fill_stack: Vec<TypeVal>,
-    stashed_fills: Vec<TypeVal>,
+    arg_types: Vec<OrTypeVal>,
+    fill_stack: Vec<OrTypeVal>,
+    stashed_fills: Vec<OrTypeVal>,
     can_set_arg_types: bool,
 }
 
 impl<'a> HasStack for TypeEnv<'a> {
-    type Item = TypeVal;
+    type Item = OrTypeVal;
     type Error = TypeError;
     fn stack(&self) -> &Vec<Self::Item> {
         &self.stack
@@ -227,9 +232,9 @@ pub type TypeResult<T = ()> = Result<T, TypeError>;
 
 fn value_as_scalar_spec(val: &Value) -> Option<Scalar> {
     match val {
-        Value::Byte(_) | Value::Num(_) if val.rank() <= 1 => {
-            Some(Scalar::Box(ScalarBox::All(Type::from_spec(val)?.into())))
-        }
+        Value::Byte(_) | Value::Num(_) if val.rank() <= 1 => Some(Scalar::Box(ScalarBox::All(
+            Box::new(Type::from_spec(val)?.into()),
+        ))),
         Value::Complex(arr)
             if arr.data.as_slice() == [Complex::I] || arr.data.as_slice() == [Complex::ONE] =>
         {
@@ -248,12 +253,12 @@ fn value_as_scalar_spec(val: &Value) -> Option<Scalar> {
             _ => return None,
         }),
         Value::Box(arr) if arr.shape == [0] => Some(Scalar::Box(ScalarBox::Any)),
-        Value::Box(arr) if val.rank() == 0 => Some(Scalar::Box(ScalarBox::All(
+        Value::Box(arr) if val.rank() == 0 => Some(Scalar::Box(ScalarBox::All(Box::new(
             Type::from_spec(&arr.data[0].0)?.into(),
-        ))),
-        Value::Box(_) if val.rank() == 1 => {
-            Some(Scalar::Box(ScalarBox::All(Type::from_spec(val)?.into())))
-        }
+        )))),
+        Value::Box(_) if val.rank() == 1 => Some(Scalar::Box(ScalarBox::All(Box::new(
+            Type::from_spec(val)?.into(),
+        )))),
         _ => None,
     }
 }
@@ -317,7 +322,7 @@ impl<'a> TypeEnv<'a> {
             return;
         }
 
-        fn match_types(arg_ty: &mut Type, stack_ty: Type) {
+        fn match_types(arg_ty: &mut OrType, stack_ty: OrType) {
             match (&mut arg_ty.scalar, stack_ty.scalar) {
                 (
                     Scalar::Box(ScalarBox::All(arg_inner)),
@@ -1017,40 +1022,53 @@ impl<'a> TypeEnv<'a> {
                         },
                     )?;
                 }
-                Rand => self.push(Scalar::Num.scalar_type()),
+                Rand => self.push(Scalar::Num.scalar_type().into()),
                 Parse => {
-                    fn parse(ty: Type) -> TypeResult<Type> {
-                        let mut shape = ty.shape;
-                        match ty.scalar {
-                            Scalar::Char | Scalar::Any => {
-                                if let Some(suf) = &mut shape.suffix {
-                                    suf.pop();
-                                } else {
-                                    shape.dims.pop();
-                                }
-                            }
-                            Scalar::Box(sb) => {
-                                if let Some(ty) = sb.into_inner() {
-                                    let ty = parse(ty)?;
-                                    if ty.shape.suffix.is_some() {
-                                        shape.suffix = Some(Vec::new());
-                                    } else {
-                                        shape.dims.extend(ty.shape.dims);
+                    fn parse(ty: OrType) -> TypeResult<OrType> {
+                        match ty.as_slice() {
+                            [mut only] => {
+                                let mut shape = only.shape;
+                                match only.scalar {
+                                    Scalar::Char | Scalar::Any => {
+                                        if let Some(suf) = &mut shape.suffix {
+                                            suf.pop();
+                                        } else {
+                                            shape.dims.pop();
+                                        }
+                                    }
+                                    Scalar::Box(sb) => {
+                                        if let Some(only) = sb.into_inner() {
+                                            let boxoronly = parse(only)?;
+                                            // TODO: What should happen here?
+                                            // for t in boxoronly {
+                                            //     if t.shape.suffix.is_some() {
+                                            //         shape.suffix = Some(Vec::new());
+                                            //     } else {
+                                            //         shape.dims.extend(t.shape.dims);
+                                            //     }
+                                            // }
+                                        }
+                                    }
+                                    scalar => {
+                                        return Err(
+                                            format!("Cannot {} {scalar}", Parse.format()).into()
+                                        );
                                     }
                                 }
+                                Ok(Type::new(Scalar::Num, shape).into())
                             }
-                            scalar => {
-                                return Err(format!("Cannot {} {scalar}", Parse.format()).into());
-                            }
+                            tys => tys
+                                .into_iter()
+                                .map(|t| parse(OrType::from(t.clone())))
+                                .collect::<TypeResult<OrType>>(),
                         }
-                        Ok(Type::new(Scalar::Num, shape))
                     }
                     let ty = self.pop(1)?.ty();
-                    self.push(parse(ty)?);
+                    self.push(parse(ty).into());
                 }
                 Json | Csv => {
                     _ = self.pop(1)?;
-                    self.push(Type::string());
+                    self.push(Type::string().into());
                 }
                 Args => {}
                 // TODO (descending priority):
@@ -1904,7 +1922,7 @@ impl<'a> TypeEnv<'a> {
         self.type_hint([if unbox {
             DynShape::from(Dim::Static(n)).with_scalar(Scalar::Box(ScalarBox::Any))
         } else {
-            DynShape::prefix([Dim::Static(n)]).with_scalar(Scalar::Any)
+            DynShape::with_prefix([Dim::Static(n)]).with_scalar(Scalar::Any)
         }]);
         let x = self.pop(1)?;
         if x.row_count() != n {
